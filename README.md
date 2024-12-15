@@ -1,0 +1,1 @@
+Very simple shell to practice rust.
