@@ -2,6 +2,63 @@ use std::io::{stdin, stdout, Write};
 use std::process::Command;
 use std::env;
 use std::path::Path;
+use std::collections::VecDeque;
+
+struct CommandHistory {
+    commands: VecDeque<String>,
+    max_size: usize,
+    current_index: Option<usize>,
+}
+
+impl CommandHistory 
+{
+    fn new(max_size: usize) -> Self {
+        CommandHistory {
+            commands: VecDeque::with_capacity(max_size),
+            max_size,
+            current_index: None,
+        }
+    }
+
+    fn add(&mut self, command: String) {
+        // Avoid adding duplicate consecutive commands
+        if self.commands.front().map_or(true, |last| *last != command) {
+            if self.commands.len() == self.max_size {
+                self.commands.pop_back();
+            }
+            self.commands.push_front(command);
+        }
+        self.current_index = None;
+    }
+
+    fn previous(&mut self) -> Option<String> {
+        if self.commands.is_empty() {
+            return None;
+        }
+
+        self.current_index = Some(match self.current_index {
+            None => 0,
+            Some(idx) if idx + 1 < self.commands.len() => idx + 1,
+            Some(_) => return None,
+        });
+
+        self.current_index.map(|idx| self.commands[idx].clone())
+    }
+
+    fn next(&mut self) -> Option<String> {
+        match self.current_index {
+            None => None,
+            Some(0) => {
+                self.current_index = None;
+                None
+            }
+            Some(idx) => {
+                self.current_index = Some(idx - 1);
+                Some(self.commands[idx - 1].clone())
+            }
+        }
+    }
+}
 
 // if we cannot get to the home directory we fallback to the root directory
 fn get_home_directory() -> String {
@@ -48,14 +105,39 @@ fn main()
         }
     };
 
+    let mut history = CommandHistory::new(64);
+
     loop {
         print!("{}> ", hostname);
         stdout().flush().unwrap();  // panic on error
 
         let mut input = String::new();
         stdin().read_line(&mut input).unwrap();
+
+        let mut input = input.trim().to_string();
+
+        match input.as_str() 
+        {
+            "\u{1b}[A" => {  // Up arrow simulation
+                if let Some(prev_cmd) = history.previous() {
+                    println!("{}", prev_cmd);
+                    input = prev_cmd;
+                }
+            },
+            "\u{1b}[B" => {  // Down arrow simulation
+                if let Some(next_cmd) = history.next() {
+                    println!("{}", next_cmd);
+                    input = next_cmd;
+                }
+            },
+            _ => {
+                if !input.is_empty() {
+                    history.add(input.to_string());
+                }
+            }
+        }
     
-        let mut tokens = input.trim().split_whitespace(); 
+        let mut tokens = input.split_whitespace(); 
         let cmd = match tokens.next() {
             Some(c) => c,
             None => continue, // Skip empty input
@@ -92,6 +174,11 @@ fn main()
             },
             "exit" => {
                 std::process::exit(0);
+            },
+            "history" => {
+                for (index, command) in history.commands.iter().enumerate() {
+                    println!("{}\t{}", index + 1, command);
+                }
             },
             cmd => {
                 let spawn_result = Command::new(cmd)
