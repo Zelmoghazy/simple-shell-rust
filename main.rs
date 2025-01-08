@@ -18,7 +18,8 @@ struct CommandHistory
     current_index: Option<usize>,
     // I want to do something extra with history, idea for now
     filtered_commands: Vec<String>,
-    suggestion_index: usize,
+    original_input: String,
+    tab_index: Option<usize>,
 }
 
 impl CommandHistory 
@@ -29,7 +30,8 @@ impl CommandHistory
             max_size,
             current_index: None,
             filtered_commands: Vec::new(),
-            suggestion_index: 0,
+            original_input: String::new(),
+            tab_index: None,
         }
     }
 
@@ -55,11 +57,44 @@ impl CommandHistory
             .cloned()
             .collect();
 
-        self.suggestion_index = 0;
+        // Reset tab completion state when input changes
+        self.tab_index = None;
+        self.original_input = start.to_string();
     }
 
     fn get_suggestions(&self) -> &[String] {
         &self.filtered_commands
+    }
+
+    fn get_next_suggestion(&mut self) -> Option<String> {
+        if self.filtered_commands.is_empty() {
+            return None;
+        }
+
+        // If we're not in tab completion mode, start it
+        if self.tab_index.is_none() {
+            self.tab_index = Some(0);
+            return Some(self.filtered_commands[0].clone());
+        }
+
+        // If we are in tab completion mode, move to next suggestion
+        if let Some(current_idx) = self.tab_index {
+            if current_idx + 1 < self.filtered_commands.len() {
+                // Move to next suggestion
+                self.tab_index = Some(current_idx + 1);
+                return Some(self.filtered_commands[current_idx + 1].clone());
+            } else {
+                // We've reached the end, reset to original input
+                self.tab_index = None;
+                return Some(self.original_input.clone());
+            }
+        }
+
+        None
+    }
+    // Reset tab completion state
+    fn reset_tab_completion(&mut self) {
+        self.tab_index = None;
     }
 
     fn previous(&mut self) -> Option<String> {
@@ -132,18 +167,21 @@ fn display_suggestions(history: &CommandHistory, current_input: &str, cursor_pos
             return;
         }
 
-        // Highlight the current suggestion
-        if i == history.suggestion_index {
+        // Highlight the current suggestion based on tab_index
+        let is_selected = history.tab_index.map_or(false, |idx| i == idx);
+                
+        if is_selected {
             if let Err(_) = execute!(stdout(), SetForegroundColor(Color::Green)) {
                 return;
             }
-            print!("> {}", suggestion);
+            print!(">  {}", suggestion);
         } else {
             if let Err(_) = execute!(stdout(), SetForegroundColor(Color::DarkGrey)) {
                 return;
             }
-            print!(">  {}", suggestion);
+            print!("> {}", suggestion);
         }
+
         if let Err(_) = execute!(stdout(), ResetColor) {
             return;
         }
@@ -228,7 +266,6 @@ fn get_home_directory() -> String {
     }
 }
 
-
 fn resolve_path(path: &str) -> String 
 {
     if path == "~" {
@@ -293,8 +330,7 @@ fn main()
                         }
                         // we will handle each key on our own now
                         KeyCode::Char(c) => {
-                            input.push(c);
-                            print!("{}", c);
+                            input.insert(cursor_pos, c);
                             cursor_pos += 1;
                             history.filter_commands(&input);
                             redraw_line(&hostname, &input, cursor_pos);
@@ -317,17 +353,13 @@ fn main()
                         KeyCode::Left => {
                             if cursor_pos > 0 {
                                 cursor_pos -= 1;
-                                if let Err(_) = execute!(stdout(), cursor::MoveLeft(1)) {
-                                    continue;
-                                }
+                                redraw_line(&hostname, &input, cursor_pos);
                             }
                         }
                         KeyCode::Right => {
                             if cursor_pos < input.len() {
                                 cursor_pos += 1;
-                                if let Err(_) = execute!(stdout(), cursor::MoveRight(1)) {
-                                    continue;
-                                }
+                                redraw_line(&hostname, &input, cursor_pos);
                             }
                         }
                         KeyCode::Home => {
@@ -349,8 +381,7 @@ fn main()
                             }
                         }
                         KeyCode::Tab => {
-                            let suggestions = history.get_suggestions();
-                            if !suggestions.is_empty() {
+                            if let Some(suggestion) = history.get_next_suggestion() {
                                 if let Err(_) = execute!(
                                     stdout(),
                                     cursor::Hide,
@@ -360,14 +391,7 @@ fn main()
                                     continue;
                                 }
                                 
-                                // Get the current suggestion before incrementing the index
-                                let current_suggestion = suggestions[history.suggestion_index].clone();
-                                
-                                // Update index for next tab press
-                                history.suggestion_index = (history.suggestion_index + 1) % suggestions.len();
-                                
-                                // Replace with current suggestion
-                                input = current_suggestion;
+                                input = suggestion;
                                 print!("{}> {}", hostname, input);
                                 cursor_pos = input.len();
                                 
@@ -375,6 +399,11 @@ fn main()
                                     continue;
                                 }
                             }
+                        }
+                        // For any other key press that modifies input, reset tab completion
+                        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => {
+                            // ... existing handling code ...
+                            history.reset_tab_completion();
                         }
                         _ => {}
                     }
